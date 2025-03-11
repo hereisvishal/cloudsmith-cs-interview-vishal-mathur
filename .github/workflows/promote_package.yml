@@ -12,19 +12,32 @@ env:
   PACKAGE_NAME: 'example_package'
 
 permissions:
-  id-token: write
-  contents: read
+  id-token: write  # Required for OIDC authentication
+  contents: read   # Needed for repository access
 
 jobs:
   promote:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Debug GitHub OIDC Token
+        run: |
+          echo "Fetching OIDC Token from GitHub..."
+          RESPONSE=$(curl -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+                          "$ACTIONS_ID_TOKEN_REQUEST_URL")
+          echo "OIDC Token Response:"
+          echo "$RESPONSE"
+
       - name: Install Cloudsmith CLI
         uses: cloudsmith-io/cloudsmith-cli-action@v1.0.1
         with:
           oidc-namespace: ${{ env.CLOUDSMITH_NAMESPACE }}
           oidc-service-slug: ${{ env.CLOUDSMITH_SERVICE_SLUG }}
+
+      - name: Debug Cloudsmith Authentication
+        run: |
+          echo "Testing Cloudsmith authentication..."
+          cloudsmith whoami || echo "Failed to authenticate with Cloudsmith"
 
       - name: Tag Package as Ready for Production
         run: |
