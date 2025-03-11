@@ -27,19 +27,31 @@ jobs:
             echo "Error: ACTIONS_ID_TOKEN_REQUEST_URL is not set!"
             exit 1
           fi
-          
+
           RESPONSE=$(curl -s -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
                           "$ACTIONS_ID_TOKEN_REQUEST_URL")
-          
-          echo "OIDC Token Response:"
+
+          echo "Raw OIDC Response:"
           echo "$RESPONSE"
-          
-          if [ -z "$RESPONSE" ]; then
-            echo "Error: OIDC response is empty!"
+
+          # Extract the actual token value from JSON
+          TOKEN=$(echo "$RESPONSE" | jq -r '.value')
+
+          # Check if the extracted token is empty
+          if [ -z "$TOKEN" ] || [ "$TOKEN" == "null" ]; then
+            echo "Error: Extracted OIDC token is empty!"
             exit 1
           fi
+
+          echo "OIDC Token Extracted!"
+          echo "$TOKEN" > oidc_token.json
           
-          echo "$RESPONSE" > oidc_token.json
+      - name: Upload OIDC Token as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: oidc-token
+          path: oidc_token.json
+
       - name: Save OIDC Token
         run: |
           echo "$RESPONSE" > oidc_token.json
