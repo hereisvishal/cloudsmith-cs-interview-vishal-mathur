@@ -5,8 +5,8 @@ on:
     types: [cloudsmith-package-synchronized]
 
 permissions:
-  id-token: write  # Required for OIDC authentication
-  contents: read   # Needed for repository access
+  id-token: write      # Needed for GitHub OIDC
+  contents: read       # Allows reading repo contents
 
 env:
   CLOUDSMITH_NAMESPACE: ${{ vars.CLOUDSMITH_NAMESPACE }}
@@ -23,91 +23,71 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v4
 
-      - name: Extract and Debug OIDC Token Claims
+      # 1) Retrieve an OIDC token from GitHub
+      # 2) Exchange it for a Cloudsmith API Key
+      - name: Exchange OIDC Token for Cloudsmith API Key
         run: |
-          echo "Fetching OIDC Token from GitHub with Audience..."
-          OIDC_RESPONSE=$(curl -s -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-              "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://AzureADTokenExchange")
+          echo "Retrieving OIDC token from GitHub..."
+          # Step A: Get masked OIDC token from GitHub
+          OIDC_VALUE=$(curl -s -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://AzureADTokenExchange" | jq '.value')
           
-          echo "Raw OIDC Response (partially masked by GitHub):"
-          echo "$OIDC_RESPONSE"
-
-          TOKEN=$(echo "$OIDC_RESPONSE" | jq -r '.value')
-
-          if [ -z "$TOKEN" ] || [ "$TOKEN" == "null" ]; then
-            echo "❌ ERROR: OIDC Token is empty!"
+          echo "Exchanging OIDC token with Cloudsmith..."
+          # Step B: POST the token to Cloudsmith to get an API key
+          CLOUDSMITH_TOKEN=$(curl -s -X POST -H "Content-Type: application/json" \
+            -d "{\"oidc_token\":${OIDC_VALUE}, \"service_slug\":\"${{ env.CLOUDSMITH_SERVICE_SLUG }}\"}" \
+            "https://api.cloudsmith.io/openid/${{ env.CLOUDSMITH_NAMESPACE }}/" | jq -r '.token')
+          
+          if [ "$CLOUDSMITH_TOKEN" = "null" ] || [ -z "$CLOUDSMITH_TOKEN" ]; then
+            echo "ERROR: Failed to retrieve Cloudsmith API key from OIDC token!"
             exit 1
           fi
-
-          # Extract just the 'sub' claim to confirm it
-          SUB_CLAIM=$(echo "$TOKEN" | base64 -d | jq -r '.sub' || true)
-
-          echo "✅ Sub claim inside the OIDC token is: $SUB_CLAIM"
           
-          if [ -z "$SUB_CLAIM" ] || [ "$SUB_CLAIM" == "null" ]; then
-            echo "❌ ERROR: 'sub' claim not found in the token!"
-            exit 1
-          fi
-
-          echo "OIDC token has the sub claim we need. Proceeding to exchange with Cloudsmith..."
-          
-          # Exchange the token with Cloudsmith
-          CLOUDSMITH_API_RESPONSE=$(curl -s -X POST \
-            -H "Content-Type: application/json" \
-            -d "{\"oidc_token\":\"$TOKEN\", \"service_slug\":\"${{ env.CLOUDSMITH_SERVICE_SLUG }}\"}" \
-            "https://api.cloudsmith.io/openid/${{ env.CLOUDSMITH_NAMESPACE }}/")
-
-          echo "Cloudsmith API Response: $CLOUDSMITH_API_RESPONSE"
-
-          CLOUDSMITH_API_KEY=$(echo "$CLOUDSMITH_API_RESPONSE" | jq -r '.token')
-
-          if [ -z "$CLOUDSMITH_API_KEY" ] || [ "$CLOUDSMITH_API_KEY" == "null" ]; then
-            echo "❌ ERROR: Cloudsmith API key is empty!"
-            exit 1
-          fi
-
-          echo "✅ Cloudsmith API Key Retrieved!"
-          echo "CLOUDSMITH_API_KEY=$CLOUDSMITH_API_KEY" >> $GITHUB_ENV
+          echo "Successfully retrieved Cloudsmith API key!"
+          echo "CLOUDSMITH_API_KEY=$CLOUDSMITH_TOKEN" >> $GITHUB_ENV
 
       - name: Verify Cloudsmith Authentication
         run: |
-          echo "Testing Cloudsmith authentication..."
-          cloudsmith whoami --api-key $CLOUDSMITH_API_KEY || echo "Failed to authenticate with Cloudsmith"
+          echo "Verifying Cloudsmith auth..."
+          cloudsmith whoami --api-key $CLOUDSMITH_API_KEY
 
       - name: Tag Package as Ready for Production
         run: |
+          echo "Tagging package with 'ready-for-production'..."
           PACKAGE_QUERY="filename:${PACKAGE_NAME}-${{ github.event.client_payload.package_version }}.tar.gz"
-          echo "Searching for package with query: $PACKAGE_QUERY"
-          
-          PACKAGE_DATA=$(cloudsmith list package ${{ env.CLOUDSMITH_NAMESPACE }}/${{ env.CLOUDSMITH_STAGING_REPO }} --api-key $CLOUDSMITH_API_KEY -q "$PACKAGE_QUERY" -F json)
+          PACKAGE_DATA=$(cloudsmith list package ${{ env.CLOUDSMITH_NAMESPACE }}/${{ env.CLOUDSMITH_STAGING_REPO }} \
+            --api-key $CLOUDSMITH_API_KEY \
+            -q "$PACKAGE_QUERY" -F json)
           
           IDENTIFIER=$(echo "$PACKAGE_DATA" | jq -r '.data[0].identifier_perm')
           
-          if [ -z "$IDENTIFIER" ] || [ "$IDENTIFIER" = "null" ]; then
-            echo "ERROR: Failed to find package identifier"
+          if [ "$IDENTIFIER" = "null" ] || [ -z "$IDENTIFIER" ]; then
+            echo "ERROR: Package not found in staging!"
             exit 1
           fi
           
-          echo "Found package identifier: $IDENTIFIER"
-          
-          cloudsmith tag add ${{ env.CLOUDSMITH_NAMESPACE }}/${{ env.CLOUDSMITH_STAGING_REPO }}/$IDENTIFIER ready-for-production --api-key $CLOUDSMITH_API_KEY
+          cloudsmith tag add ${{ env.CLOUDSMITH_NAMESPACE }}/${{ env.CLOUDSMITH_STAGING_REPO }}/$IDENTIFIER \
+            ready-for-production --api-key $CLOUDSMITH_API_KEY
 
-      - name: Get all packages tagged 'ready-for-production' and promote
+      - name: Promote Package to Production
         run: |
-          PACKAGE_DATA=$(cloudsmith list package ${{ env.CLOUDSMITH_NAMESPACE }}/${{ env.CLOUDSMITH_STAGING_REPO }} --api-key $CLOUDSMITH_API_KEY -q "tag:ready-for-production" -F json)
+          echo "Promoting packages tagged 'ready-for-production' to production..."
+          PACKAGE_DATA=$(cloudsmith list package ${{ env.CLOUDSMITH_NAMESPACE }}/${{ env.CLOUDSMITH_STAGING_REPO }} \
+            --api-key $CLOUDSMITH_API_KEY \
+            -q "tag:ready-for-production" -F json)
           
           IDENTIFIERS=$(echo "$PACKAGE_DATA" | jq -r '.data[].identifier_perm')
 
           if [ -z "$IDENTIFIERS" ]; then
-            echo "ERROR: No packages found with 'ready-for-production' tag"
+            echo "ERROR: No packages found with 'ready-for-production' tag!"
             exit 1
           fi
 
-          echo "Promoting the following packages:"
-          echo "$IDENTIFIERS"
-          
           for ID in $IDENTIFIERS; do
             cloudsmith mv --yes \
               ${{ env.CLOUDSMITH_NAMESPACE }}/${{ env.CLOUDSMITH_STAGING_REPO }}/$ID \
-              ${{ env.CLOUDSMITH_PRODUCTION_REPO }} --api-key $CLOUDSMITH_API_KEY
+              ${{ env.CLOUDSMITH_PRODUCTION_REPO }} \
+              --api-key $CLOUDSMITH_API_KEY
           done
+
+          echo "Promotion completed!"
