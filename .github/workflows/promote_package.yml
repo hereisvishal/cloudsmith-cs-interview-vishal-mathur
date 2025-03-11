@@ -4,6 +4,10 @@ on:
   repository_dispatch:
     types: [cloudsmith-package-synchronized]
 
+permissions:
+  id-token: write  # Required for OIDC authentication
+  contents: read   # Needed for repository access
+
 env:
   CLOUDSMITH_NAMESPACE: ${{ vars.CLOUDSMITH_NAMESPACE }}
   CLOUDSMITH_STAGING_REPO: 'staging'
@@ -11,105 +15,91 @@ env:
   CLOUDSMITH_SERVICE_SLUG: ${{ vars.CLOUDSMITH_SERVICE_SLUG }}
   PACKAGE_NAME: 'example_package'
 
-permissions:
-  id-token: write  # Required for OIDC authentication
-  contents: read   # Needed for repository access
-
 jobs:
   promote:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
       - name: Debug GitHub OIDC Token
         run: |
           echo "Fetching OIDC Token from GitHub..."
+          
           if [ -z "$ACTIONS_ID_TOKEN_REQUEST_URL" ]; then
-            echo "Error: ACTIONS_ID_TOKEN_REQUEST_URL is not set!"
+            echo "ERROR: ACTIONS_ID_TOKEN_REQUEST_URL is not set!"
             exit 1
           fi
 
           RESPONSE=$(curl -s -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-                          "$ACTIONS_ID_TOKEN_REQUEST_URL")
+                          "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://AzureADTokenExchange")
 
           echo "Raw OIDC Response:"
           echo "$RESPONSE"
 
-          # Extract the actual token value from JSON
           TOKEN=$(echo "$RESPONSE" | jq -r '.value')
 
-          # Check if the extracted token is empty
           if [ -z "$TOKEN" ] || [ "$TOKEN" == "null" ]; then
-            echo "Error: Extracted OIDC token is empty!"
+            echo "ERROR: Extracted OIDC token is empty!"
             exit 1
           fi
 
           echo "OIDC Token Extracted!"
           echo "$TOKEN" > oidc_token.json
-
-      - name: Fetch OIDC Token Using GitHub CLI
-        run: |
-          echo "Attempting to retrieve token with GitHub CLI..."
-          gh auth setup-git
-          TOKEN=$(gh api /repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/id-token)
-          echo "GitHub CLI Token Response:"
-          echo "$TOKEN"
-        env:
-         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
           
-      - name: Upload OIDC Token as Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: oidc-token
-          path: oidc_token.json
-
-      - name: Save OIDC Token
+      - name: Exchange OIDC Token for Cloudsmith API Token
         run: |
-          echo "$RESPONSE" > oidc_token.json
-      - name: Upload OIDC Token as Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: oidc-token
-          path: oidc_token.json
+          echo "Exchanging OIDC token for Cloudsmith API token..."
+          
+          CLOUDSMITH_API_RESPONSE=$(curl -s -X POST \
+            -H "Content-Type: application/json" \
+            -d "{\"oidc_token\":\"$TOKEN\", \"service_slug\":\"${{ env.CLOUDSMITH_SERVICE_SLUG }}\"}" \
+            "https://api.cloudsmith.io/openid/${{ env.CLOUDSMITH_NAMESPACE }}/")
 
+          echo "Cloudsmith API Response: $CLOUDSMITH_API_RESPONSE"
+          
+          CLOUDSMITH_API_KEY=$(echo "$CLOUDSMITH_API_RESPONSE" | jq -r '.token')
 
-      - name: Install Cloudsmith CLI
-        uses: cloudsmith-io/cloudsmith-cli-action@v1.0.1
-        with:
-          oidc-namespace: ${{ env.CLOUDSMITH_NAMESPACE }}
-          oidc-service-slug: ${{ env.CLOUDSMITH_SERVICE_SLUG }}
+          if [ -z "$CLOUDSMITH_API_KEY" ] || [ "$CLOUDSMITH_API_KEY" == "null" ]; then
+            echo "ERROR: Cloudsmith API key is empty!"
+            exit 1
+          fi
 
-      - name: Debug Cloudsmith Authentication
+          echo "Cloudsmith API Key Retrieved!"
+          echo "CLOUDSMITH_API_KEY=$CLOUDSMITH_API_KEY" >> $GITHUB_ENV
+
+      - name: Verify Cloudsmith Authentication
         run: |
           echo "Testing Cloudsmith authentication..."
-          cloudsmith whoami || echo "Failed to authenticate with Cloudsmith"
+          cloudsmith whoami --api-key $CLOUDSMITH_API_KEY || echo "Failed to authenticate with Cloudsmith"
 
       - name: Tag Package as Ready for Production
         run: |
           PACKAGE_QUERY="filename:${PACKAGE_NAME}-${{ github.event.client_payload.package_version }}.tar.gz"
           echo "Searching for package with query: $PACKAGE_QUERY"
           
-          PACKAGE_DATA=$(cloudsmith list package ${{ env.CLOUDSMITH_NAMESPACE }}/${{ env.CLOUDSMITH_STAGING_REPO }} -q "$PACKAGE_QUERY" -F json)
+          PACKAGE_DATA=$(cloudsmith list package ${{ env.CLOUDSMITH_NAMESPACE }}/${{ env.CLOUDSMITH_STAGING_REPO }} --api-key $CLOUDSMITH_API_KEY -q "$PACKAGE_QUERY" -F json)
           
           IDENTIFIER=$(echo "$PACKAGE_DATA" | jq -r '.data[0].identifier_perm')
           
           if [ -z "$IDENTIFIER" ] || [ "$IDENTIFIER" = "null" ]; then
-            echo "Failed to find package identifier"
+            echo "ERROR: Failed to find package identifier"
             exit 1
           fi
           
           echo "Found package identifier: $IDENTIFIER"
           
-          cloudsmith tag add ${{ env.CLOUDSMITH_NAMESPACE }}/${{ env.CLOUDSMITH_STAGING_REPO }}/$IDENTIFIER ready-for-production
+          cloudsmith tag add ${{ env.CLOUDSMITH_NAMESPACE }}/${{ env.CLOUDSMITH_STAGING_REPO }}/$IDENTIFIER ready-for-production --api-key $CLOUDSMITH_API_KEY
 
       - name: Get all packages tagged 'ready-for-production' and promote
         run: |
-          PACKAGE_DATA=$(cloudsmith list package ${{ env.CLOUDSMITH_NAMESPACE }}/${{ env.CLOUDSMITH_STAGING_REPO }} -q "tag:ready-for-production" -F json)
+          PACKAGE_DATA=$(cloudsmith list package ${{ env.CLOUDSMITH_NAMESPACE }}/${{ env.CLOUDSMITH_STAGING_REPO }} --api-key $CLOUDSMITH_API_KEY -q "tag:ready-for-production" -F json)
           
           IDENTIFIERS=$(echo "$PACKAGE_DATA" | jq -r '.data[].identifier_perm')
 
           if [ -z "$IDENTIFIERS" ]; then
-            echo "No packages found with 'ready-for-production' tag"
+            echo "ERROR: No packages found with 'ready-for-production' tag"
             exit 1
           fi
 
@@ -119,5 +109,5 @@ jobs:
           for ID in $IDENTIFIERS; do
             cloudsmith mv --yes \
               ${{ env.CLOUDSMITH_NAMESPACE }}/${{ env.CLOUDSMITH_STAGING_REPO }}/$ID \
-              ${{ env.CLOUDSMITH_PRODUCTION_REPO }}
+              ${{ env.CLOUDSMITH_PRODUCTION_REPO }} --api-key $CLOUDSMITH_API_KEY
           done
