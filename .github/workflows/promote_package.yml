@@ -23,38 +23,13 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v4
 
-      - name: Debug GitHub OIDC Token
-        run: |
-          echo "Fetching OIDC Token from GitHub..."
-          
-          if [ -z "$ACTIONS_ID_TOKEN_REQUEST_URL" ]; then
-            echo "ERROR: ACTIONS_ID_TOKEN_REQUEST_URL is not set!"
-            exit 1
-          fi
-
-          RESPONSE=$(curl -s -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-                          "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://AzureADTokenExchange")
-
-          echo "Raw OIDC Response:"
-          echo "$RESPONSE"
-
-          TOKEN=$(echo "$RESPONSE" | jq -r '.value')
-
-          if [ -z "$TOKEN" ] || [ "$TOKEN" == "null" ]; then
-            echo "ERROR: Extracted OIDC token is empty!"
-            exit 1
-          fi
-
-          echo "OIDC Token Extracted!"
-          echo "$TOKEN" > oidc_token.json
-          
-      - name: Fetch OIDC Token with Audience
+      - name: Extract and Debug OIDC Token Claims
         run: |
           echo "Fetching OIDC Token from GitHub with Audience..."
           OIDC_RESPONSE=$(curl -s -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
               "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://AzureADTokenExchange")
-
-          echo "OIDC Response from GitHub:"
+          
+          echo "Raw OIDC Response (partially masked by GitHub):"
           echo "$OIDC_RESPONSE"
 
           TOKEN=$(echo "$OIDC_RESPONSE" | jq -r '.value')
@@ -64,9 +39,19 @@ jobs:
             exit 1
           fi
 
-          echo "✅ OIDC Token Successfully Retrieved!"
+          # Extract just the 'sub' claim to confirm it
+          SUB_CLAIM=$(echo "$TOKEN" | base64 -d | jq -r '.sub' || true)
 
-          # Exchange token with Cloudsmith
+          echo "✅ Sub claim inside the OIDC token is: $SUB_CLAIM"
+          
+          if [ -z "$SUB_CLAIM" ] || [ "$SUB_CLAIM" == "null" ]; then
+            echo "❌ ERROR: 'sub' claim not found in the token!"
+            exit 1
+          fi
+
+          echo "OIDC token has the sub claim we need. Proceeding to exchange with Cloudsmith..."
+          
+          # Exchange the token with Cloudsmith
           CLOUDSMITH_API_RESPONSE=$(curl -s -X POST \
             -H "Content-Type: application/json" \
             -d "{\"oidc_token\":\"$TOKEN\", \"service_slug\":\"${{ env.CLOUDSMITH_SERVICE_SLUG }}\"}" \
@@ -83,8 +68,6 @@ jobs:
 
           echo "✅ Cloudsmith API Key Retrieved!"
           echo "CLOUDSMITH_API_KEY=$CLOUDSMITH_API_KEY" >> $GITHUB_ENV
-
-
 
       - name: Verify Cloudsmith Authentication
         run: |
