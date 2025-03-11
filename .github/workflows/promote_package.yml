@@ -51,23 +51,43 @@ jobs:
       - name: Exchange OIDC Token for Cloudsmith API Token
         run: |
           echo "Exchanging OIDC token for Cloudsmith API token..."
-          
+
+          # Extract OIDC token from GitHub Actions
+          OIDC_RESPONSE=$(curl -s -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+              "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://AzureADTokenExchange")
+
+          echo "OIDC Response from GitHub:"
+          echo "$OIDC_RESPONSE"
+
+          # Extract the token from the JSON response
+          TOKEN=$(echo "$OIDC_RESPONSE" | jq -r '.value')
+
+          if [ -z "$TOKEN" ] || [ "$TOKEN" == "null" ]; then
+            echo "❌ ERROR: OIDC Token is EMPTY! GitHub Actions may not be providing a token."
+            exit 1
+          fi
+
+          echo "✅ OIDC Token Successfully Retrieved!"
+
+          # Exchange token with Cloudsmith
           CLOUDSMITH_API_RESPONSE=$(curl -s -X POST \
             -H "Content-Type: application/json" \
             -d "{\"oidc_token\":\"$TOKEN\", \"service_slug\":\"${{ env.CLOUDSMITH_SERVICE_SLUG }}\"}" \
             "https://api.cloudsmith.io/openid/${{ env.CLOUDSMITH_NAMESPACE }}/")
 
           echo "Cloudsmith API Response: $CLOUDSMITH_API_RESPONSE"
-          
+
+          # Extract the Cloudsmith API key
           CLOUDSMITH_API_KEY=$(echo "$CLOUDSMITH_API_RESPONSE" | jq -r '.token')
 
           if [ -z "$CLOUDSMITH_API_KEY" ] || [ "$CLOUDSMITH_API_KEY" == "null" ]; then
-            echo "ERROR: Cloudsmith API key is empty!"
+            echo "❌ ERROR: Cloudsmith API key is empty!"
             exit 1
           fi
 
-          echo "Cloudsmith API Key Retrieved!"
+          echo "✅ Cloudsmith API Key Retrieved!"
           echo "CLOUDSMITH_API_KEY=$CLOUDSMITH_API_KEY" >> $GITHUB_ENV
+
 
       - name: Verify Cloudsmith Authentication
         run: |
