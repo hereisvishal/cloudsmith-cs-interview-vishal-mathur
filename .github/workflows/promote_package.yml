@@ -27,6 +27,15 @@ jobs:
                           "$ACTIONS_ID_TOKEN_REQUEST_URL")
           echo "OIDC Token Response:"
           echo "$RESPONSE"
+      - name: Save OIDC Token
+        run: |
+          echo "$RESPONSE" > oidc_token.json
+      - name: Upload OIDC Token as Artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: oidc-token
+          path: oidc_token.json
+
 
       - name: Install Cloudsmith CLI
         uses: cloudsmith-io/cloudsmith-cli-action@v1.0.1
