@@ -45,6 +45,17 @@ jobs:
 
           echo "OIDC Token Extracted!"
           echo "$TOKEN" > oidc_token.json
+
+      - name: Fetch OIDC Token Using GitHub CLI
+        run: |
+          echo "Attempting to retrieve token with GitHub CLI..."
+          gh auth setup-git
+          TOKEN=$(gh api /repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/id-token)
+          echo "GitHub CLI Token Response:"
+          echo "$TOKEN"
+        env:
+         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
           
       - name: Upload OIDC Token as Artifact
         uses: actions/upload-artifact@v4
