@@ -5,15 +5,15 @@ on:
     types: [cloudsmith-package-synchronized]
 
 permissions:
-  id-token: write      # Needed for GitHub OIDC
-  contents: read       # Allows reading repo contents
+  id-token: write 
+  contents: read
 
 env:
   CLOUDSMITH_NAMESPACE: ${{ vars.CLOUDSMITH_NAMESPACE }}
   CLOUDSMITH_STAGING_REPO: 'staging'
   CLOUDSMITH_PRODUCTION_REPO: 'production'
   CLOUDSMITH_SERVICE_SLUG: ${{ vars.CLOUDSMITH_SERVICE_SLUG }}
-  PACKAGE_NAME: 'example_package'
+  PACKAGE_NAME: 'example-package'
 
 jobs:
   promote:
@@ -40,11 +40,11 @@ jobs:
             "https://api.cloudsmith.io/openid/${{ env.CLOUDSMITH_NAMESPACE }}/" | jq -r '.token')
 
           if [ "$CLOUDSMITH_TOKEN" = "null" ] || [ -z "$CLOUDSMITH_TOKEN" ]; then
-            echo "❌ ERROR: Failed to retrieve Cloudsmith API key from OIDC token!"
+            echo "ERROR: Failed to retrieve Cloudsmith API key from OIDC token!"
             exit 1
           fi
 
-          echo "✅ Successfully retrieved Cloudsmith API key!"
+          echo "Successfully retrieved Cloudsmith API key!"
           echo "CLOUDSMITH_API_KEY=$CLOUDSMITH_TOKEN" >> $GITHUB_ENV
 
       - name: Verify Cloudsmith Authentication
@@ -63,7 +63,7 @@ jobs:
           IDENTIFIER=$(echo "$PACKAGE_DATA" | jq -r '.data[0].identifier_perm')
           
           if [ "$IDENTIFIER" = "null" ] || [ -z "$IDENTIFIER" ]; then
-            echo "❌ ERROR: Package not found in staging!"
+            echo "ERROR: Package not found in staging!"
             exit 1
           fi
           
@@ -80,7 +80,7 @@ jobs:
           IDENTIFIERS=$(echo "$PACKAGE_DATA" | jq -r '.data[].identifier_perm')
 
           if [ -z "$IDENTIFIERS" ]; then
-            echo "❌ ERROR: No packages found with 'ready-for-production' tag!"
+            echo "ERROR: No packages found with 'ready-for-production' tag!"
             exit 1
           fi
 
@@ -91,4 +91,4 @@ jobs:
               --api-key $CLOUDSMITH_API_KEY
           done
 
-          echo "✅ Promotion completed!"
+          echo "Promotion completed!"
